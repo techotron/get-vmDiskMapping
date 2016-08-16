@@ -1,0 +1,63 @@
+# NOTE: I found this script on reddit by /r/omrsafetyo
+# I've made some very minor changes to it - the bulk of it was created by this reddit user.
+
+Function Get-DiskToSCSIMapping
+{
+    [CmdletBinding()]
+    param (
+        [string] $Computername = $ENV:COMPUTERNAME
+    )
+    $DiskDrives = Get-WmiObject -Class Win32_DiskDrive -Computer $Computername
+    ForEach ( $PhysicalDisk in $DiskDrives ) {
+        $query = "ASSOCIATORS OF {Win32_DiskDrive.DeviceID='$($PhysicalDisk.DeviceID)'} WHERE ResultClass=Win32_DiskPartition" 
+
+        $Partitions = Get-WmiObject -Query $query -Computer $Computername
+        foreach ( $Partition in $Partitions ) { 
+            $query = "ASSOCIATORS OF {Win32_DiskPartition.DeviceID='$($Partition.DeviceID)'} WHERE ResultClass=Win32_LogicalDisk" 
+
+            $LogicalDisks = Get-WmiObject -Query $query -Computer $Computername
+            ForEach ( $LogicalDisk in $LogicalDisks ) {
+                if ( $LogicalDisk -eq $null ) { continue }
+                [PSCustomObject]@{
+                    DeviceID = $LogicalDisk.DeviceID
+                    VolumeName = $LogicalDisk.VolumeName
+                    Size = $LogicalDisk.Size
+                    SCSITarget = $PhysicalDisk.SCSITargetId
+                    SCSIBus = $PhysicalDisk.SCSIBus
+                    Name = $PhysicalDisk.Name
+                }
+            }
+        }
+    }
+}
+
+Function Get-VMHardDiskToDriveLetter
+{
+    [CmdletBinding()]
+    param(
+        [string] $Computername = $ENV:COMPUTERNAME,
+        [Parameter(Mandatory=$True)]
+        [string] $VIServer
+    )
+    if ( (Get-PSSnapin -Name "VMware.VimAutomation.Core" -ErrorAction SilentlyContinue) -eq $null ){   
+        Add-PSSnapin -Name "VMware.VimAutomation.Core" -ErrorAction SilentlyContinue
+    } 
+    $null = Connect-VIServer $VIServer
+
+    $DiskToSCSIMappings = Get-DiskToSCSIMapping -Computername $Computername
+    $VM = Get-VM $Computername
+    $HardDisks = $VM.HardDisks
+    ForEach ( $HardDisk in $HardDisks ) {
+        $Name = $HardDisk.Name
+        $ID = $Name -replace "[^\d]"    # Hard Disk ## = ##
+        $NameMatch = "PHYSICALDRIVE" + $($ID - 1)
+        $MatchingMapping = $DiskToSCSIMappings | Where-Object { $_.Name -match "$NameMatch\b" }
+
+        $MatchingMapping | Add-Member -MemberType NoteProperty -Name FileName -Value $HardDisk.FileName -force
+        $MatchingMapping | Add-Member -MemberType NoteProperty -Name CapacityGB -Value $HardDisk.CapacityGB -force
+        $MatchingMapping | Add-Member -MemberType NoteProperty -Name VMDiskName -Value $HardDisk.Name -force
+        $MatchingMapping
+    }
+}
+
+Get-VMHardDiskToDriveLetter -Computername sg-sql-02 -VIServer vc-srv-01
